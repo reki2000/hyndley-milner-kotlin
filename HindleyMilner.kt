@@ -19,7 +19,7 @@ class TypeVariable() : Type() {
         name
     }
     var name: Char? = null
-    var instance: Type? = null
+    var instance: Type = UNKNOWN
 }
 
 open class TypeOperator(val name: String, val types: List<Type>) : Type()
@@ -28,7 +28,8 @@ class Function(name: String, types: List<Type>) : TypeOperator(name, types) {
 }
 
 val INTEGER = TypeOperator("int",  emptyList())
-val BOOL    = TypeOperator("bool", emptyList())
+val BOOLEAN = TypeOperator("bool", emptyList())
+val UNKNOWN = TypeOperator("unknown", emptyList())
 
 fun analyse(node: Term, env: Map<String, Type>, nonGeneric: Set<Type> = emptySet()): Type =
     when (node) {
@@ -69,19 +70,14 @@ fun getType(name: String, env: Map<String, Type>, nonGeneric: Set<Type>): Type {
 }
 
 fun fresh(t: Type, nonGeneric: Set<Type>): Type {
-    val mappings = mapOf<Type, Type>()
+    val mappings = mutableMapOf<Type, Type>()
     fun freshrec(tp: Type): Type {
         val p: Type = prune(tp)
         return when(p) {
             is TypeVariable ->
-                if (isGeneric(p, nonGeneric)) {
-                    val q = mappings[p]
-                    if (q == null) {
-                        val r = TypeVariable()
-                        mappings[p] = r
-                        return r
-                    } else q
-                } else p
+                if (isGeneric(p, nonGeneric))
+                    mappings.getOrPut(p, { TypeVariable() })
+                else p
             is TypeOperator ->
             	TypeOperator(p.name, p.types.map { freshrec(it) })
         }
@@ -105,18 +101,17 @@ fun unify(t1: Type, t2: Type) {
         if (a.name != b.name || a.types.count() != b.types.count()) {
             throw Exception("Type mismatch ${a} != ${b}")
         }
-        a.types.zip(b.types).forEach { unify(it[0], it[1]) }
+        a.types.zip(b.types).forEach { (p,q) -> unify(p, q) }
     }
 }
 
-fun prune(t: Type): Type {
+fun prune(t: Type): Type =
     if (t is TypeVariable) {
-        if (t.instance != null) {
+        if (t.instance != UNKNOWN) {
             t.instance = prune(t.instance)
         }
-        t.instance
+       	t.instance
     } else t
-}
 
 fun isGeneric(v: Type, nonGeneric: Set<Type>): Boolean = !occursIn(v, nonGeneric)
 
@@ -124,9 +119,24 @@ fun occursIn(t: Type, types: Iterable<Type>): Boolean = types.any { occursInType
 
 fun occursInType(v: Type, type2: Type): Boolean {
     val prunedType2 = prune(type2)
-    if (prunedType2 == v) true
+    return if (prunedType2 == v) true
     else if (prunedType2 is TypeOperator) occursIn(v, prunedType2.types)
     else false
 }
 
-fun isIntegerLiteral(name: String): Boolean = toLongOrNull(name) != null
+fun isIntegerLiteral(name: String): Boolean = name.toLongOrNull() != null
+
+fun main(args: String) {
+    val var1 = TypeVariable()
+    val env = mapOf(
+        "true" to BOOLEAN,
+        "false" to BOOLEAN,
+        "if" to Function(BOOLEAN, Function(var1, Function(var1, var1)))
+    )
+
+    listOf(
+        Letrec("factorial", Lambda("n", Id("n")), Apply(Id("factorial"), Id("5")))
+    ).forEach {
+        println(analyse(it, env, emptySet<Type>()))
+    }
+}
