@@ -1,3 +1,4 @@
+// 構文木の要素の定義
 sealed class Term()
 data class Lambda(val v: String, val body: Term) : Term()
 data class Id(val name: String) : Term()
@@ -5,34 +6,40 @@ data class Apply(val fn: Term, val arg: Term) : Term()
 data class Let(val v: String, val defn: Term, val body: Term) : Term()
 data class Letrec(val v: String, val defn: Term, val body: Term) : Term()
 
+// 型にかかわる要素（型変数、型演算子）の定義
 sealed class Type()
+var nextVariableName: Char = 'a'
 class TypeVariable() : Type() {
-    companion object {
-        var nextVariableId: Int = 0
-        var nextVariableName: Char = 'a'
-    }
-    val id: Int = nextVariableId++
-    fun name() {
-        if (name == null) {
-            name = nextVariableName++
+    override fun toString(): String {
+        if (name == "") {
+            name = "${nextVariableName++}" // 変数名を表示するときに無駄にアルファベットを消費しない工夫
         }
-        name
+        return name
     }
-    var name: Char? = null
+    var name: String = ""
     var instance: Type = UNKNOWN
 }
 
-open class TypeOperator(val name: String, val types: List<Type>) : Type()
+open class TypeOperator(val name: String, val types: List<Type>) : Type() {
+    override fun toString() = name + " " + types.map { it.toString() }.joinToString(" ")
+}
+
+// 具体的な型をいくつか定義する
 class Function(name: String, types: List<Type>) : TypeOperator(name, types) {
     constructor(fromType: Type, toType: Type) :  this("->", listOf(fromType, toType))
+    override fun toString() = types[0].toString() + "->" + types[1].toString()
 }
 
 val INTEGER = TypeOperator("int",  emptyList())
 val BOOLEAN = TypeOperator("bool", emptyList())
 val UNKNOWN = TypeOperator("unknown", emptyList())
 
-fun analyse(node: Term, env: Map<String, Type>, nonGeneric: Set<Type> = emptySet()): Type =
-    when (node) {
+// 与えられた構文木の型を推論する。
+// 推論の上で重要な働きをするのは、Apply （関数の適用）の処理。
+// 「apply される関数の型」 と 「引数の型 -> 結果の型」 が一致しなければならない ということを利用し、
+// これらを unify にかけていくことで不明な型変数の型を一つずつ特定していく
+fun analyse(node: Term, env: Map<String, Type>, nonGeneric: Set<Type> = emptySet()): Type {
+    return when (node) {
         is Id -> getType(node.name, env, nonGeneric)
         is Apply -> {
             val funType = analyse(node.fn, env, nonGeneric)
@@ -58,6 +65,7 @@ fun analyse(node: Term, env: Map<String, Type>, nonGeneric: Set<Type> = emptySet
             analyse(node.body, newEnv, nonGeneric)
         }
     }
+}
 
 fun getType(name: String, env: Map<String, Type>, nonGeneric: Set<Type>): Type {
     val a = env[name]
@@ -66,9 +74,10 @@ fun getType(name: String, env: Map<String, Type>, nonGeneric: Set<Type>): Type {
     else if (isIntegerLiteral(name))
         INTEGER
     else
-        throw Exception("Undefined symbol")
+        throw Exception("Undefined symbol ${name}")
 }
 
+// 一時的に使うだけの型変数を処理するため、generic な型変数は共有しそうでないものはコピーした新しい型を作る
 fun fresh(t: Type, nonGeneric: Set<Type>): Type {
     val mappings = mutableMapOf<Type, Type>()
     fun freshrec(tp: Type): Type {
@@ -85,6 +94,7 @@ fun fresh(t: Type, nonGeneric: Set<Type>): Type {
     return freshrec(t)
 }
 
+// 右辺 t1 と左辺 t2 は同じ型 という条件のもと、t1, t2 の中に不明な型変数があらわれたら反対側の辺の型を代入していく
 fun unify(t1: Type, t2: Type) {
     val a = prune(t1)
     val b = prune(t2)
@@ -105,17 +115,16 @@ fun unify(t1: Type, t2: Type) {
     }
 }
 
+// tの型が推論できていれば、推論結果の型に展開する
 fun prune(t: Type): Type =
-    if (t is TypeVariable) {
-        if (t.instance != UNKNOWN) {
-            t.instance = prune(t.instance)
-        }
-       	t.instance
+    if (t is TypeVariable && t.instance != UNKNOWN) {
+        t.instance = prune(t.instance)
+        t.instance
     } else t
 
-fun isGeneric(v: Type, nonGeneric: Set<Type>): Boolean = !occursIn(v, nonGeneric)
+fun isGeneric(v: Type, nonGeneric: Set<Type>) = !occursIn(v, nonGeneric)
 
-fun occursIn(t: Type, types: Iterable<Type>): Boolean = types.any { occursInType(t, it) }
+fun occursIn(t: Type, types: Iterable<Type>) = types.any { occursInType(t, it) }
 
 fun occursInType(v: Type, type2: Type): Boolean {
     val prunedType2 = prune(type2)
@@ -124,19 +133,32 @@ fun occursInType(v: Type, type2: Type): Boolean {
     else false
 }
 
-fun isIntegerLiteral(name: String): Boolean = name.toLongOrNull() != null
+fun isIntegerLiteral(name: String) = name.toLongOrNull() != null
 
-fun main(args: String) {
+// いくつかの構文で型を推論するテスト
+fun main(args: Array<String>) {
     val var1 = TypeVariable()
     val env = mapOf(
         "true" to BOOLEAN,
         "false" to BOOLEAN,
-        "if" to Function(BOOLEAN, Function(var1, Function(var1, var1)))
+        "if" to Function(BOOLEAN, Function(var1, Function(var1, var1))),
+        "prev" to Function(INTEGER, INTEGER),
+        "zero" to Function(INTEGER, BOOLEAN),
+        "times" to Function(INTEGER, Function(INTEGER, INTEGER))
     )
 
     listOf(
-        Letrec("factorial", Lambda("n", Id("n")), Apply(Id("factorial"), Id("5")))
+        Id("5"),              // 5 : int
+        Lambda("n", Id("5")), // n -> 5 : a->int
+        Lambda("n", Lambda("m", Id("5"))), // n -> m -> 5 : a->b->int
+		Letrec("factorial",   // fun factorial(n) = if zero(n) 1 else n * factorial(n-1): int
+           Lambda("n",
+               Apply(Apply(Apply(Id("if"),
+                   Apply(Id("zero"),Id("n"))),
+                   Id("1")),
+                   Apply(Apply(Id("times"),Id("n")),Apply(Id("prev"),Id("n"))))),
+           Apply(Id("factorial"), Id("5")))
     ).forEach {
-        println(analyse(it, env, emptySet<Type>()))
+        println(prune(analyse(it, env, emptySet<Type>())))
     }
 }
