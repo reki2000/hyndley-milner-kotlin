@@ -1,23 +1,21 @@
 // 構文木の要素の定義
 sealed class Term()
-data class Lambda(val v: String, val body: Term) : Term()
-data class Id(val name: String) : Term()
-data class Apply(val fn: Term, val arg: Term) : Term()
-data class Let(val v: String, val defn: Term, val body: Term) : Term()
-data class Letrec(val v: String, val defn: Term, val body: Term) : Term()
+class Lambda(val v: String, val body: Term) : Term()
+class Id(val name: String) : Term()
+class Apply(val fn: Term, val arg: Term) : Term()
+class Let(val v: String, val defn: Term, val body: Term) : Term()
+class Letrec(val v: String, val defn: Term, val body: Term) : Term()
 
 // 型にかかわる要素（型変数、型演算子）の定義
 sealed class Type()
-var nextVariableName: Char = 'a'
+
 class TypeVariable() : Type() {
-    override fun toString(): String {
-        if (name == "") {
-            name = "${nextVariableName++}" // 変数名を表示するときに無駄にアルファベットを消費しない工夫
-        }
-        return name
+    companion object {
+      var nextVariableName: Char = 'a'
     }
-    var name: String = ""
-    var instance: Type = UNKNOWN
+    val name: String by lazy { "${nextVariableName++}" }
+    var instance: Type = UnknownT
+    override fun toString(): String = name
 }
 
 open class TypeOperator(val name: String, val types: List<Type>) : Type() {
@@ -25,14 +23,14 @@ open class TypeOperator(val name: String, val types: List<Type>) : Type() {
 }
 
 // 具体的な型をいくつか定義する
-class Function(name: String, types: List<Type>) : TypeOperator(name, types) {
+class FunctionT(name: String, types: List<Type>) : TypeOperator(name, types) {
     constructor(fromType: Type, toType: Type) :  this("->", listOf(fromType, toType))
     override fun toString() = types[0].toString() + "->" + types[1].toString()
 }
 
-val INTEGER = TypeOperator("int",  emptyList())
-val BOOLEAN = TypeOperator("bool", emptyList())
-val UNKNOWN = TypeOperator("unknown", emptyList())
+val IntegerT = TypeOperator("int",  emptyList())
+val BooleanT = TypeOperator("bool", emptyList())
+val UnknownT = TypeOperator("unknown", emptyList())
 
 // 与えられた構文木の型を推論する。
 // 推論の上で重要な働きをするのは、Apply （関数の適用）の処理。
@@ -45,13 +43,13 @@ fun analyse(node: Term, env: Map<String, Type>, nonGeneric: Set<Type> = emptySet
             val funType = analyse(node.fn, env, nonGeneric)
             val argType = analyse(node.arg, env, nonGeneric)
             val resultType = TypeVariable()
-            unify(Function(argType, resultType), funType)
+            unify(FunctionT(argType, resultType), funType)
             resultType
         }
         is Lambda -> {
             val argType = TypeVariable()
             val resultType = analyse(node.body, env + (node.v to argType), nonGeneric + argType)
-            Function(argType, resultType)
+            FunctionT(argType, resultType)
         }
         is Let -> {
             val defnType = analyse(node.defn, env, nonGeneric)
@@ -68,11 +66,10 @@ fun analyse(node: Term, env: Map<String, Type>, nonGeneric: Set<Type> = emptySet
 }
 
 fun getType(name: String, env: Map<String, Type>, nonGeneric: Set<Type>): Type {
-    val a = env[name]
-    return if (a != null)
-		fresh(a, nonGeneric)
-    else if (isIntegerLiteral(name))
-        INTEGER
+    return env[name]?.let {
+		    fresh(it, nonGeneric)
+    } ?: if (isIntegerTLiteral(name))
+        IntegerT
     else
         throw Exception("Undefined symbol ${name}")
 }
@@ -117,7 +114,7 @@ fun unify(t1: Type, t2: Type) {
 
 // tの型が推論できていれば、推論結果の型に展開する
 fun prune(t: Type): Type =
-    if (t is TypeVariable && t.instance != UNKNOWN) {
+    if (t is TypeVariable && t.instance != UnknownT) {
         t.instance = prune(t.instance)
         t.instance
     } else t
@@ -133,24 +130,26 @@ fun occursInType(v: Type, type2: Type): Boolean {
     else false
 }
 
-fun isIntegerLiteral(name: String) = name.toLongOrNull() != null
+fun isIntegerTLiteral(name: String) = name.toLongOrNull() != null
 
 // いくつかの構文で型を推論するテスト
 fun main(args: Array<String>) {
     val var1 = TypeVariable()
     val env = mapOf(
-        "true" to BOOLEAN,
-        "false" to BOOLEAN,
-        "if" to Function(BOOLEAN, Function(var1, Function(var1, var1))),
-        "prev" to Function(INTEGER, INTEGER),
-        "zero" to Function(INTEGER, BOOLEAN),
-        "times" to Function(INTEGER, Function(INTEGER, INTEGER))
+        "true" to BooleanT,
+        "false" to BooleanT,
+        "if" to FunctionT(BooleanT, FunctionT(var1, FunctionT(var1, var1))),
+        "prev" to FunctionT(IntegerT, IntegerT),
+        "zero" to FunctionT(IntegerT, BooleanT),
+        "times" to FunctionT(IntegerT, FunctionT(IntegerT, IntegerT))
     )
 
     listOf(
         Id("5"),              // 5 : int
         Lambda("n", Id("5")), // n -> 5 : a->int
         Lambda("n", Lambda("m", Id("5"))), // n -> m -> 5 : a->b->int
+        Let("dec", Lambda("n", Apply(Id("prev"), Id("n"))), // fun dec(n) = n - 1; dec(1)
+           Apply(Id("dec"), Id("1"))),
 		Letrec("factorial",   // fun factorial(n) = if zero(n) 1 else n * factorial(n-1): int
            Lambda("n",
                Apply(Apply(Apply(Id("if"),
